@@ -1,106 +1,51 @@
 import streamlit as st
-from transformers import AutoTokenizer, AutoModelForCausalLM
-import torch
+from modules.base_agent import GemmaAgent
+from modules.text_generation import TextGenerationUI
+from utils.helpers import sanitize_input
 
-# Configuration
-MODEL_NAME = "google/gemma-2b-it"  # Smaller version for local testing
-DEFAULT_MAX_LENGTH = 512
+if "agent" not in st.session_state:
+    st.session_state.agent = None
 
-# Initialize session state
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# Sidebar for settings
 with st.sidebar:
-    st.header("Configuration")
-    hf_token = st.text_input("Hugging Face Token", type="password", help="Required for Gemma access")
-    max_length = st.slider("Max Response Length", 100, 1024, DEFAULT_MAX_LENGTH)
-    device_map = "cuda" if torch.cuda.is_available() else "cpu"
-    st.write(f"Running on: {device_map.upper()}")
-
-# Model loading function
-@st.cache_resource
-def load_model(hf_token):
-    if not hf_token:
-        st.error("Hugging Face Token required!")
-        return None, None
+    st.header("🔧 Configuration")
+    hf_token = st.text_input("HF Token", type="password")
+    if hf_token and not st.session_state.agent:
+        try:
+            st.session_state.agent = GemmaAgent(hf_token)
+            st.success("Model loaded!")
+        except Exception as e:
+            st.error(f"Error loading model: {str(e)}")
     
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, token=hf_token)
-        model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME,
-            token=hf_token,
-            torch_dtype=torch.bfloat16,
-            device_map=device_map
-        )
-        return model, tokenizer
-    except Exception as e:
-        st.error(f"Model loading failed: {str(e)}")
-        return None, None
+    st.divider()
+    st.caption("Current Mode: Text Generation")
 
-# Load model
-model, tokenizer = load_model(hf_token)
+# Main interface
+st.title("✍️ Gemma Text Studio")
 
-# Main UI
-st.title("🧠 Local Gemma Assistant")
-mode = st.selectbox("Select Mode", [
-    "Chat",
-    "Text Generation",
-    "Code Completion",
-    "Summarization"
-])
-
-# Generation function
-def generate_response(prompt, mode):
-    try:
-        if mode == "Chat":
-            chat_template = [
-                {"role": "user", "content": prompt},
-                {"role": "assistant", "content": ""}
-            ]
-            inputs = tokenizer.apply_chat_template(chat_template, return_tensors="pt").to(model.device)
-        else:
-            inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-
-        outputs = model.generate(
-            inputs,
-            max_new_tokens=max_length,
-            temperature=0.7,
-            do_sample=True
-        )
-        return tokenizer.decode(outputs[0], skip_special_tokens=True)
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-# Mode handling
-if mode == "Chat":
-    st.header("Chat Mode")
+if st.session_state.agent:
+    text_ui = TextGenerationUI(st.session_state.agent)
     
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    if prompt := st.chat_input("Your message"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.spinner("Thinking..."):
-            response = generate_response(prompt, mode)
-            st.session_state.messages.append({"role": "assistant", "content": response})
-        st.rerun()
-
-elif mode == "Code Completion":
-    st.header("Code Assistant")
-    code_prompt = st.text_area("Enter code problem:", height=150)
-    if st.button("Generate Code"):
-        with st.spinner("Coding..."):
-            response = generate_response(f"Write Python code for: {code_prompt}", mode)
-            st.code(response, language="python")
-
-elif mode == "Summarization":
-    st.header("Summarization Mode")
-    text = st.text_area("Paste your text:", height=300)
-    if st.button("Summarize"):
-        with st.spinner("Processing..."):
-            response = generate_response(f"Summarize this text:\n{text}", mode)
+    # Render controls
+    sub_mode, temperature = text_ui.render_controls()
+    
+    # Get formatted prompt
+    prompt = text_ui.render_inputs(sub_mode)
+    
+    if st.button("Generate", type="primary"):
+        clean_prompt = sanitize_input(prompt)
+        with st.spinner("Crafting your text..."):
+            response = st.session_state.agent.generate(
+                clean_prompt,
+                temperature=temperature,
+                max_length=1024
+            )
+        
+        st.subheader("Generated Result")
+        if sub_mode == "Poetry":
+            st.write(response.replace("\n", "  \n"))  # Preserve line breaks
+        elif sub_mode == "Creative Writing":
             st.write(response)
-
-# Run with: streamlit run app.py
+        else:
+            st.markdown(response)
+else:
+    st.warning("Please enter your Hugging Face token in the sidebar")
